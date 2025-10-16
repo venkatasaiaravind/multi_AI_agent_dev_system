@@ -1,0 +1,8 @@
+crewai>=0.76.0
+python-dotenv>=1.0.0
+asyncio
+pathlib
+requests
+aiohttp
+pydantic>=2.0.0
+flask>=2.3.0
