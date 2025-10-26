@@ -52,3 +52,17 @@ class ListDirectoryTool(BaseTool):
             return f"📂 Directory contents:\n" + "\n".join(items)
         except Exception as e:
             return f"❌ Error listing directory: {str(e)}"
+
+class FileOperationTools:
+    def __init__(self):
+        self.directory_cache = {}  # Cache directory listings
+    
+    def list_directory(self, directory_path: str):
+        # Check cache first
+        if directory_path in self.directory_cache:
+            return self.directory_cache[directory_path]
+        
+        # Otherwise, list and cache
+        result = os.listdir(directory_path)
+        self.directory_cache[directory_path] = result
+        return result

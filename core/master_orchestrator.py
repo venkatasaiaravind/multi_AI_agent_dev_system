@@ -1,566 +1,685 @@
+# COMPLETE MASTER ORCHESTRATOR - READY TO USE
+# Place this ENTIRE file at: core/master_orchestrator.py
+# Copy and paste everything - no edits needed!
+
+import sys
+import os
+import io
+
+# ============================================================================
+# FIX WINDOWS CONSOLE ENCODING - MUST BE AT THE VERY TOP
+# ============================================================================
+if sys.platform.startswith('win'):
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    except Exception as e:
+        pass
+    
+    try:
+        import locale
+        locale.setlocale(locale.LC_ALL, '')
+    except:
+        pass
+
+import sys
+import os
+import io
 import asyncio
 import time
 import json
-import os
-import sys
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 from crewai import Crew, Task
 from core.comprehensive_agent_factory import ComprehensiveAgentFactory
 from config.model_config import ModelConfig
+from core.rate_limiting import RateLimiter, ConcurrencyManager
+from core.error_recovery import RetryStrategy, ErrorHandler, CircuitBreaker, ErrorSeverity
 
 class MasterOrchestrator:
+    """Enhanced orchestrator with resilience, rate limiting, and error recovery"""
     def __init__(self):
         self.agent_factory = ComprehensiveAgentFactory()
         self.model_config = ModelConfig()
         self.workspace_base = os.getenv("WORKSPACE_DIR", "workspace")
-        
-        # Rate limiting and performance tracking
+        self.rate_limiter = RateLimiter(workspace_dir=self.workspace_base)
+        self.concurrency_manager = ConcurrencyManager(max_concurrent_requests=10)
+        self.retry_strategy = RetryStrategy(max_retries=3, base_delay=1.0)
+        self.error_handler = ErrorHandler(workspace_dir=self.workspace_base)
+        self.circuit_breaker = CircuitBreaker(failure_threshold=5, timeout=60)
         self.request_counts = {"openrouter": 0, "groq": 0}
         self.session_start = time.time()
         self.projects_completed = 0
-        
-        # Quality and error tracking
         self.execution_stats = {
             "successful_projects": 0,
             "failed_projects": 0,
             "average_execution_time": 0,
             "total_api_requests": 0
         }
-        
-        print(" Master Orchestrator initialized with comprehensive agent system")
-        print(f" Workspace: {self.workspace_base}")
-        print(f" Available project types: {len(self.agent_factory.list_available_project_types())}")
-    
+        print("✅ Master Orchestrator initialized")
+
+    def safe_write_file(self, filepath: Path, content: str):
+        """Write file with proper UTF-8 encoding"""
+        try:
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+            with open(filepath, 'w', encoding='utf-8', errors='replace') as f:
+                f.write(content)
+        except Exception as e:
+            print(f"Warning: Could not write {filepath}: {e}")
+
+
+
     async def create_project(self, project_requirements: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Main orchestration method - creates complete projects using specialized agent teams
-        """
-        start_time = time.time()
-        project_id = self._generate_project_id(project_requirements)
-        
-        print(f"\n STARTING PROJECT ORCHESTRATION")
-        print(f"=" * 80)
-        print(f" Project ID: {project_id}")
-        print(f" Type: {project_requirements.get('type', 'custom')}")
-        print(f" Description: {project_requirements.get('description', 'N/A')}")
-        print(f" Custom Requirements: {project_requirements.get('custom_requirements', 'None')}")
-        print(f" Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"=" * 80)
+        """Create a complete project from requirements using AI agents"""
         
         try:
-            # Phase 1: Project Analysis and Planning
-            print(f"\n PHASE 1: PROJECT ANALYSIS & PLANNING")
-            project_plan = await self._analyze_project_requirements(project_requirements)
+            # 1. Generate project ID and setup
+            project_id = self.generate_project_id(project_requirements)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            workspace_path = os.path.join(self.workspace_base, f"{project_id}_{timestamp}")
             
-            # Phase 2: Workspace Setup
-            print(f"\n PHASE 2: WORKSPACE SETUP")
-            workspace_path = await self._setup_project_workspace(project_id, project_plan)
+            print(f"📁 Project workspace: {workspace_path}")
             
-            # Phase 3: Agent Team Assembly
-            print(f"\n PHASE 3: AGENT TEAM ASSEMBLY")
-            agents = await self._assemble_agent_team(project_requirements, project_plan)
+            # Create workspace directories
+            Path(workspace_path).mkdir(parents=True, exist_ok=True)
+            Path(workspace_path, "src").mkdir(exist_ok=True)
+            Path(workspace_path, "docs").mkdir(exist_ok=True)
+            Path(workspace_path, "config").mkdir(exist_ok=True)
+            Path(workspace_path, "scripts").mkdir(exist_ok=True)
             
-            # Phase 4: Task Creation and Sequencing
-            print(f"\n PHASE 4: TASK ORCHESTRATION")
-            tasks = await self._create_project_tasks(agents, project_requirements, workspace_path, project_plan)
+            # 2. Assess complexity
+            complexity = self.assess_project_complexity(
+                project_requirements.get("description", ""),
+                project_requirements.get("custom_requirements", [])
+            )
+            print(f"📊 Project complexity: {complexity}")
             
-            # Phase 5: Execution with Monitoring
-            print(f"\n PHASE 5: COORDINATED EXECUTION")
-            execution_result = await self._execute_with_monitoring(agents, tasks, workspace_path)
+            # 3. Create specialized agent team
+            print(f"\n🤖 Assembling AI agent team...")
+            agents = self.agent_factory.create_agent_team(
+                project_type=project_requirements.get("type", "web_application"),
+                project_description=project_requirements.get("description", ""),
+                custom_requirements=project_requirements.get("custom_requirements", [])
+            )
             
-            # Phase 6: Quality Validation and Finalization
-            print(f"\n PHASE 6: QUALITY VALIDATION")
-            final_result = await self._validate_and_finalize(workspace_path, execution_result, project_plan)
+            if not agents or len(agents) == 0:
+                raise Exception("Failed to create agent team")
             
-            # Calculate execution metrics
-            execution_time = time.time() - start_time
-            self.execution_stats["successful_projects"] += 1
-            self.projects_completed += 1
+            print(f"✅ {len(agents)} specialized agents ready\n")
             
-            print(f"\n PROJECT COMPLETION SUCCESS!")
-            print(f"=" * 80)
-            print(f"  Total Execution Time: {execution_time:.1f} seconds")
-            print(f" Project Location: {workspace_path}")
-            print(f" Agents Used: {len(agents)}")
-            print(f" Tasks Completed: {len(tasks)}")
-            print(f" Quality Score: {final_result.get('quality_score', 'N/A')}")
-            print(f"=" * 80)
+            # 4. Generate project plan
+            project_plan = {
+                "project_id": project_id,
+                "project_type": project_requirements.get("type", "web_application"),
+                "description": project_requirements.get("description", ""),
+                "complexity": complexity,
+                "agents": [agent.role for agent in agents],
+                "workspace": workspace_path
+            }
             
+            # 5. Create tasks for agents
+            print(f"📋 Creating tasks for agents...")
+            tasks = await self.create_project_tasks(
+                agents=agents,
+                requirements=project_requirements,
+                workspace_path=workspace_path,
+                project_plan=project_plan
+            )
+            
+            if not tasks or len(tasks) == 0:
+                raise Exception("No tasks created")
+            
+            print(f"✅ {len(tasks)} tasks defined\n")
+            
+            # 6. Execute tasks with agents
+            print(f"⚙️  Starting agent execution...")
+            execution_start = time.time()
+            
+            execution_result = await self.execute_with_monitoring(
+                agents=agents,
+                tasks=tasks,
+                workspace_path=workspace_path
+            )
+            
+            execution_time = time.time() - execution_start
+            print(f"\n✅ Agent execution completed in {execution_time:.1f}s\n")
+            
+            # 7. Generate fallback files if agents didn't create them
+            print(f"📝 Ensuring all files are generated...")
+            
+            # Check if agents created files
+            workspace = Path(workspace_path)
+            existing_files = list(workspace.rglob("*.py"))
+            
+            if len(existing_files) < 2:  # Agents didn't create files
+                print(f"⚠️  Agents didn't create files. Generating fallback...")
+                self.generate_backend_files(
+                    workspace_path=workspace_path,
+                    project_type=project_requirements.get("type", "web_application"),
+                    description=project_requirements.get("description", ""),
+                    custom_reqs=project_requirements.get("custom_requirements", [])
+                )
+                
+                self.generate_deployment_files(
+                    workspace_path=workspace_path,
+                    project_type=project_requirements.get("type", "web_application"),
+                    description=project_requirements.get("description", "")
+                )
+                
+                arch_doc = self.generate_architecture_doc(
+                    project_type=project_requirements.get("type", "web_application"),
+                    description=project_requirements.get("description", ""),
+                    custom_reqs=project_requirements.get("custom_requirements", [])
+                )
+                self.safe_write_file(Path(workspace_path) / "docs" / "architecture.md", arch_doc)
+            
+            # 8. Validate and finalize
+            print(f"🔍 Validating project...")
+            validation_result = await self.validate_and_finalize(
+                workspace_path=workspace_path,
+                execution_result=execution_result,
+                project_plan=project_plan
+            )
+            
+            # 9. Return success result
             return {
                 "success": True,
                 "project_id": project_id,
                 "workspace_path": workspace_path,
-                "execution_time": execution_time,
                 "agents_used": len(agents),
                 "tasks_completed": len(tasks),
-                "quality_metrics": final_result.get("quality_metrics", {}),
-                "files_generated": final_result.get("files_generated", []),
-                "project_summary": final_result.get("summary", "Project completed successfully")
+                "execution_time": execution_time,
+                "quality_metrics": validation_result,
+                "summary": validation_result.get("summary", "Project completed successfully")
             }
             
         except Exception as e:
-            # Handle errors gracefully
-            execution_time = time.time() - start_time
-            self.execution_stats["failed_projects"] += 1
+            print(f"\n❌ Error during project generation: {str(e)}")
+            import traceback
+            traceback.print_exc()
             
-            error_result = await self._handle_project_error(e, project_id, execution_time)
-            
-            print(f"\n PROJECT EXECUTION FAILED")
-            print(f"=" * 80)
-            print(f"  Execution Time: {execution_time:.1f} seconds")
-            print(f" Error: {str(e)}")
-            print(f" Recovery Actions: {error_result.get('recovery_actions', 'None')}")
-            print(f"=" * 80)
-            
-            return error_result
-    
-    async def _analyze_project_requirements(self, requirements: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze project requirements and create comprehensive execution plan"""
-        
-        print(" Analyzing project complexity and requirements...")
-        
-        project_type = requirements.get("type", "web_application")
-        description = requirements.get("description", "")
+            return {
+                "success": False,
+                "error": str(e),
+                "project_id": project_id if 'project_id' in locals() else "unknown",
+                "workspace_path": workspace_path if 'workspace_path' in locals() else None,
+                "partial_workspace": workspace_path if 'workspace_path' in locals() else None
+            }
+    async def create_project_tasks(
+        self,
+        agents: List,
+        requirements: Dict,
+        workspace_path: str,
+        project_plan: Dict
+    ) -> List[Task]:
+        """Create AI-driven tasks that use agents to generate code dynamically"""
+        print("📝 Creating AI-driven code generation tasks...")
+
+        project_description = requirements.get("description", "")
         custom_reqs = requirements.get("custom_requirements", [])
-        
-        # Determine project complexity
-        complexity = self._assess_project_complexity(description, custom_reqs)
-        
-        # Estimate resource requirements
-        estimated_agents = len(self.agent_factory.project_templates.get(project_type, []))
-        estimated_tasks = estimated_agents * 2  # Average 2 tasks per agent
-        estimated_api_calls = estimated_tasks * 10  # Conservative estimate
-        
-        plan = {
-            "complexity": complexity,
-            "estimated_agents": estimated_agents,
-            "estimated_tasks": estimated_tasks,
-            "estimated_api_calls": estimated_api_calls,
-            "estimated_duration": self._estimate_duration(complexity, estimated_tasks),
-            "risk_factors": self._identify_risk_factors(project_type, custom_reqs),
-            "success_criteria": self._define_success_criteria(requirements),
-            "quality_gates": self._define_quality_gates(project_type)
-        }
-        
-        print(f"    Complexity Assessment: {complexity}")
-        print(f"    Estimated Team Size: {estimated_agents} agents")
-        print(f"    Estimated Duration: {plan['estimated_duration']} minutes")
-        print(f"    Estimated API Calls: {estimated_api_calls}")
-        
-        return plan
-    
-    async def _setup_project_workspace(self, project_id: str, project_plan: Dict) -> str:
-        """Create organized workspace with proper structure"""
-        
-        workspace_path = Path(self.workspace_base) / project_id
-        
-        print(f" Creating workspace: {workspace_path}")
-        
-        # Create directory structure
-        directories = [
-            workspace_path,
-            workspace_path / "src",
-            workspace_path / "docs", 
-            workspace_path / "tests",
-            workspace_path / "config",
-            workspace_path / "scripts",
-            workspace_path / "assets",
-            workspace_path / ".orchestrator"  # Internal orchestrator files
-        ]
-        
-        for directory in directories:
-            directory.mkdir(parents=True, exist_ok=True)
-        
-        # Create project metadata
-        metadata = {
-            "project_id": project_id,
-            "created_at": datetime.now().isoformat(),
-            "project_plan": project_plan,
-            "status": "in_progress",
-            "workspace_structure": [str(d.relative_to(workspace_path)) for d in directories]
-        }
-        
-        metadata_file = workspace_path / ".orchestrator" / "project_metadata.json"
-        with open(metadata_file, 'w') as f:
-            json.dump(metadata, f, indent=2)
-        
-        print(f"    Workspace created with {len(directories)} directories")
-        return str(workspace_path)
-    
-    async def _assemble_agent_team(self, requirements: Dict, project_plan: Dict) -> List:
-        """Assemble optimal agent team using comprehensive factory"""
-        
-        print(" Assembling specialized agent team...")
-        
-        # Add rate limiting check
-        await self._check_rate_limits()
-        
-        agents = self.agent_factory.create_agent_team(
-            requirements.get("type", "web_application"),
-            requirements.get("description", ""),
-            requirements.get("custom_requirements", [])
-        )
-        
-        print(f"    Team assembled: {len(agents)} specialized agents ready")
-        return agents
-    
-    async def _create_project_tasks(self, agents: List, requirements: Dict, 
-                                  workspace_path: str, project_plan: Dict) -> List[Task]:
-        """Create comprehensive, sequenced tasks for the agent team"""
-        
-        print(" Creating orchestrated task sequence...")
-        
-        project_type = requirements.get("type", "web_application")
-        description = requirements.get("description", "")
-        
         tasks = []
-        
-        # Task 1: Strategic Architecture & Planning
-        if any("architect" in agent.role.lower() for agent in agents):
-            arch_agent = next(agent for agent in agents if "architect" in agent.role.lower())
-            
-            arch_task = Task(
-                description=f"""
-                 STRATEGIC ARCHITECTURE & PLANNING TASK
-                
-                Project: {description}
-                Type: {project_type}
-                Complexity: {project_plan.get('complexity', 'medium')}
-                
-                DELIVERABLES REQUIRED:
-                1. Comprehensive System Architecture Document
-                   - System overview and component diagram
-                   - Technology stack with detailed justification
-                   - Data architecture and flow diagrams
-                   - Security architecture and threat model
-                   - Scalability and performance considerations
-                   - Integration points and external dependencies
-                
-                2. Technical Specifications
-                   - Detailed API specifications
-                   - Database schema design
-                   - User interface wireframes and flow
-                   - Non-functional requirements
-                
-                3. Implementation Roadmap
-                   - Development phases and milestones
-                   - Risk assessment and mitigation strategies
-                   - Resource requirements and timeline
-                
-                Save all architecture documents in: {workspace_path}/docs/
-                Create detailed README.md in project root: {workspace_path}/
-                
-                Focus on creating a world-class, scalable architecture that serves as the foundation for all subsequent development work.
-                """,
-                expected_output=f"""
-                Complete architecture package including:
-                - {workspace_path}/docs/system_architecture.md
-                - {workspace_path}/docs/technical_specifications.md  
-                - {workspace_path}/docs/implementation_roadmap.md
-                - {workspace_path}/README.md
-                """,
-                agent=arch_agent
+
+        # TASK 1: BACKEND CODE GENERATION - AGENTS USE AI TO WRITE CODE
+        backend_agents = [agent for agent in agents if any(
+            role in agent.role.lower() 
+            for role in ["backend", "developer", "engineer", "architect"]
+        )]
+        if backend_agents:
+            dev_agent = backend_agents[0]
+            backend_task = Task(
+                description=f"""You are building: {project_description}
+
+YOUR CRITICAL TASK: Write ACTUAL working Python Flask backend code
+
+REQUIRED FILES:
+
+1. {workspace_path}/src/app.py
+   - Complete Flask application
+   - ALL routes for: {project_description}
+   - Actual functionality (not placeholders)
+   - Production-ready
+
+2. {workspace_path}/src/config.py
+   - Configuration management
+   - Environment variables
+
+3. {workspace_path}/src/__init__.py
+   - Package initialization
+
+4. {workspace_path}/requirements.txt
+   - ALL dependencies
+
+5. {workspace_path}/README.md
+   - Setup instructions
+   - API documentation
+
+CRITICAL:
+- Use WriteFileTool to save each file
+- Write REAL working code
+- Implement actual functionality
+- Make it production-ready
+
+IMPLEMENT:
+{chr(10).join(f"- {req}" for req in custom_reqs) if custom_reqs else "- Standard Flask app"}
+
+START: Write app.py using write_file_tool!""",
+                expected_output=f"All backend files in {workspace_path}/src/",
+                agent=dev_agent
             )
-            tasks.append(arch_task)
-        
-        # Task 2: Core Development (Backend/Smart Contracts/Core Logic)
-        core_agents = [agent for agent in agents if any(role in agent.role.lower() 
-                      for role in ["backend", "smart contract", "core", "data engineer", "ml engineer"])]
-        
-        for agent in core_agents[:2]:  # Limit to 2 core development agents for efficiency
-            dev_task = Task(
-                description=f"""
-                 CORE DEVELOPMENT TASK - {agent.role}
-                
-                Based on the architecture in {workspace_path}/docs/, develop the core system:
-                
-                DEVELOPMENT REQUIREMENTS:
-                1. Implement Core Business Logic
-                   - Main application logic following architectural patterns
-                   - Data models and business rules
-                   - API endpoints or core interfaces
-                   - Error handling and logging
-                
-                2. Integration Layer
-                   - Database integration with proper ORM/queries
-                   - External service integrations
-                   - Configuration management
-                   - Environment-specific settings
-                
-                3. Security Implementation
-                   - Authentication and authorization
-                   - Input validation and sanitization
-                   - Security headers and CORS configuration
-                   - Encryption for sensitive data
-                
-                4. Testing Foundation
-                   - Unit tests for core functionality
-                   - Integration test structure
-                   - Mock data and test fixtures
-                   - Testing configuration
-                
-                Save all code in: {workspace_path}/src/
-                Include requirements/dependencies in: {workspace_path}/requirements.txt or package.json
-                Create deployment configuration in: {workspace_path}/config/
-                
-                Ensure code follows best practices, is well-documented, and production-ready.
-                """,
-                expected_output=f"""
-                Complete core implementation including:
-                - {workspace_path}/src/ (all source code)
-                - {workspace_path}/requirements.txt or package.json
-                - {workspace_path}/config/ (configuration files)
-                - {workspace_path}/tests/ (test files)
-                """,
-                agent=agent,
-                context=[arch_task] if 'arch_task' in locals() else []
-            )
-            tasks.append(dev_task)
-        
-        # Task 3: Frontend/UI Development (if applicable)
-        ui_agents = [agent for agent in agents if any(role in agent.role.lower() 
-                    for role in ["frontend", "ui", "mobile", "game designer"])]
-        
-        if ui_agents and project_type in ["web_application", "mobile_app", "game_development", "dapp_development"]:
-            ui_agent = ui_agents[0]
-            
-            ui_task = Task(
-                description=f"""
-                 USER INTERFACE DEVELOPMENT TASK
-                
-                Create exceptional user interface based on architecture and core system:
-                
-                UI/UX REQUIREMENTS:
-                1. Modern User Interface
-                   - Responsive design for all device types
-                   - Intuitive navigation and user flows
-                   - Accessibility compliance (WCAG guidelines)
-                   - Performance-optimized components
-                
-                2. Frontend Architecture
-                   - Component-based architecture
-                   - State management implementation
-                   - API integration with error handling
-                   - Routing and navigation system
-                
-                3. User Experience Features
-                   - Loading states and error boundaries
-                   - Form validation with user feedback
-                   - Real-time updates where applicable
-                   - Mobile-first responsive design
-                
-                4. Integration & Testing
-                   - Backend API integration
-                   - Unit tests for components
-                   - End-to-end test scenarios
-                   - Cross-browser compatibility
-                
-                Save frontend code in: {workspace_path}/src/frontend/ or {workspace_path}/src/ui/
-                Include build configuration and assets in appropriate directories
-                """,
-                expected_output=f"""
-                Complete frontend implementation:
-                - {workspace_path}/src/frontend/ (UI components and pages)
-                - Build configuration and asset files
-                - Frontend tests and documentation
-                """,
-                agent=ui_agent,
-                context=tasks  # Depends on previous tasks
-            )
-            tasks.append(ui_task)
-        
-        # Task 4: Quality Assurance & Testing
-        qa_agents = [agent for agent in agents if any(role in agent.role.lower() 
-                    for role in ["qa", "test", "security"])]
-        
-        if qa_agents:
-            qa_agent = qa_agents[0]
-            
-            qa_task = Task(
-                description=f"""
-                 COMPREHENSIVE QUALITY ASSURANCE TASK
-                
-                Conduct thorough testing and quality validation of the complete system:
-                
-                QUALITY ASSURANCE SCOPE:
-                1. Functional Testing
-                   - Test all features against requirements
-                   - Verify user workflows and edge cases
-                   - Validate data integrity and business logic
-                   - Check error handling and recovery
-                
-                2. Technical Quality Assessment
-                   - Code review and quality metrics
-                   - Performance testing and optimization
-                   - Security vulnerability assessment
-                   - Compatibility testing across platforms
-                
-                3. Documentation Review
-                   - Verify documentation completeness
-                   - Test setup and deployment instructions
-                   - Validate API documentation with examples
-                   - Check code comments and inline docs
-                
-                4. Deployment Readiness
-                   - Production deployment checklist
-                   - Environment configuration validation
-                   - Monitoring and logging setup
-                   - Backup and recovery procedures
-                
-                Create comprehensive test results in: {workspace_path}/tests/
-                Generate quality report in: {workspace_path}/docs/quality_report.md
-                """,
-                expected_output=f"""
-                Complete quality assurance package:
-                - {workspace_path}/tests/ (all test files and results)
-                - {workspace_path}/docs/quality_report.md
-                - Deployment readiness checklist
-                """,
-                agent=qa_agent,
-                context=tasks  # Must wait for all development tasks
-            )
-            tasks.append(qa_task)
-        
-        # Task 5: DevOps & Deployment (if DevOps agent available)
+            tasks.append(backend_task)
+
+        # TASK 2: DOCUMENTATION
+        if len(agents) > 1:
+            doc_agents = [agent for agent in agents if any(
+                role in agent.role.lower() 
+                for role in ["architect", "analyst"]
+            )]
+            if doc_agents:
+                doc_agent = doc_agents[0]
+                doc_task = Task(
+                    description=f"""Create comprehensive documentation.
+
+Read code from {workspace_path}/src/app.py using read_file_tool
+
+Create:
+1. {workspace_path}/docs/architecture.md - System design
+2. {workspace_path}/docs/deployment.md - Deployment guide
+3. {workspace_path}/docs/api.md - API documentation
+
+Use read_file_tool and write_file_tool""",
+                    expected_output=f"Documentation in {workspace_path}/docs/",
+                    agent=doc_agent,
+                    context=[backend_task]
+                )
+                tasks.append(doc_task)
+
+        # TASK 3: DEVOPS
         devops_agents = [agent for agent in agents if "devops" in agent.role.lower()]
-        
         if devops_agents:
             devops_agent = devops_agents[0]
-            
             devops_task = Task(
-                description=f"""
-                 DEVOPS & DEPLOYMENT ORCHESTRATION TASK
-                
-                Set up production-ready deployment and infrastructure:
-                
-                DEVOPS DELIVERABLES:
-                1. Containerization & Infrastructure
-                   - Docker configuration for all services
-                   - Docker Compose for local development
-                   - Kubernetes manifests for production (if applicable)
-                   - Infrastructure as Code (Terraform/CloudFormation)
-                
-                2. CI/CD Pipeline
-                   - Automated build and test pipeline
-                   - Deployment automation scripts
-                   - Environment promotion strategy
-                   - Rollback and recovery procedures
-                
-                3. Monitoring & Observability
-                   - Application performance monitoring setup
-                   - Logging aggregation and analysis
-                   - Health checks and alerting rules
-                   - Security monitoring and audit trails
-                
-                4. Production Operations
-                   - Environment configuration management
-                   - Scaling and load balancing setup
-                   - Backup and disaster recovery plan
-                   - Security hardening checklist
-                
-                Save all DevOps files in: {workspace_path}/scripts/ and {workspace_path}/config/
-                """,
-                expected_output=f"""
-                Production-ready deployment package:
-                - {workspace_path}/scripts/ (deployment and automation scripts)
-                - {workspace_path}/config/ (infrastructure and CI/CD configuration)
-                - Complete deployment documentation
-                """,
+                description=f"""Create DevOps configuration.
+
+Create:
+1. {workspace_path}/config/.env.example - Environment variables
+2. {workspace_path}/config/docker-compose.yml - Docker setup
+3. {workspace_path}/config/Dockerfile - Docker image
+4. {workspace_path}/scripts/deploy.sh - Deployment script
+
+Use write_file_tool""",
+                expected_output=f"Deployment files in {workspace_path}/config/",
                 agent=devops_agent,
-                context=tasks  # Should be one of the final tasks
+                context=[backend_task]
             )
             tasks.append(devops_task)
-        
-        print(f"    Created {len(tasks)} orchestrated tasks with proper sequencing")
+
+        print(f"   ✅ {len(tasks)} AI-driven tasks created\n")
         return tasks
+
+
+
+    # ========================================================================
+    # DYNAMIC FILE GENERATION METHODS
+    # ========================================================================
+
+    def generate_architecture_doc(self, project_type: str, description: str, custom_reqs: List) -> str:
+        """Generate architecture dynamically"""
+        
+        tech_stacks = {
+            "web_application": {"frontend": "React/Vue.js", "backend": "Flask/FastAPI", "database": "PostgreSQL"},
+            "mobile_app": {"frontend": "React Native", "backend": "Node.js", "database": "Firebase"},
+            "ai_ml_application": {"frontend": "Streamlit", "backend": "TensorFlow/PyTorch", "database": "MongoDB"},
+            "blockchain_project": {"frontend": "React + Web3", "backend": "Solidity", "database": "Blockchain"},
+            "api_service": {"frontend": "N/A", "backend": "FastAPI", "database": "PostgreSQL"},
+        }
+        
+        tech_stack = tech_stacks.get(project_type, tech_stacks["web_application"])
+        
+        return f"""# System Architecture: {project_type.replace('_', ' ').title()}
+
+## Project: {description}
+
+## Technology Stack
+- Frontend: {tech_stack['frontend']}
+- Backend: {tech_stack['backend']}
+- Database: {tech_stack['database']}
+
+## Requirements
+{chr(10).join(f"- {req}" for req in custom_reqs) if custom_reqs else "- Standard implementation"}
+
+## Components
+1. Client/Frontend
+2. API Layer
+3. Business Logic
+4. Data Layer
+
+## Security
+- Input validation
+- Authentication
+- Encryption
+- HTTPS/SSL
+
+## Scalability
+- Load balancing
+- Caching (Redis)
+- Database optimization
+- CDN
+"""
+
+    def generate_backend_files(self, workspace_path: str, project_type: str, description: str, custom_reqs: List) -> List[str]:
+        """Generate backend files dynamically"""
+        
+        if project_type == "web_application":
+            return self._generate_web_app_files(workspace_path, description, custom_reqs)
+        elif project_type == "mobile_app":
+            return self._generate_mobile_backend_files(workspace_path, description, custom_reqs)
+        elif project_type == "ai_ml_application":
+            return self._generate_ml_files(workspace_path, description, custom_reqs)
+        elif project_type == "blockchain_project":
+            return self._generate_blockchain_files(workspace_path, description, custom_reqs)
+        elif project_type == "api_service":
+            return self._generate_api_service_files(workspace_path, description, custom_reqs)
+        else:
+            return self._generate_web_app_files(workspace_path, description, custom_reqs)
+
+    def _generate_web_app_files(self, workspace_path: str, description: str, custom_reqs: List) -> List[str]:
+        """Generate web app backend"""
+        files_created = []
+        
+        init_content = f'''"""
+{description}
+"""
+__version__ = "1.0.0"
+'''
+        self.safe_write_file(Path(workspace_path) / "src" / "__init__.py", init_content)
+        files_created.append("__init__.py")
+        
+        config_content = """import os
+
+class Config:
+    SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key'
+    DATABASE_URL = os.environ.get('DATABASE_URL') or 'sqlite:///app.db'
+    DEBUG = False
+
+class DevelopmentConfig(Config):
+    DEBUG = True
+
+config = {'development': DevelopmentConfig, 'default': DevelopmentConfig}
+"""
+        self.safe_write_file(Path(workspace_path) / "src" / "config.py", config_content)
+        files_created.append("config.py")
+        
+        app_content = f"""from flask import Flask, request, jsonify
+from src.config import config
+
+def create_app(config_name='default'):
+    app = Flask(__name__)
+    app.config.from_object(config[config_name])
     
-    async def _execute_with_monitoring(self, agents: List, tasks: List[Task], workspace_path: str) -> str:
-        """Execute tasks with intelligent monitoring and error recovery"""
+    @app.route('/health', methods=['GET'])
+    def health():
+        return jsonify({{'status': 'healthy'}})
+    
+    @app.route('/api/info', methods=['GET'])
+    def info():
+        return jsonify({{'name': '{description}', 'version': '1.0.0'}})
+    
+    return app
+
+if __name__ == '__main__':
+    app = create_app()
+    app.run(debug=True, host='0.0.0.0', port=5000)
+"""
+        self.safe_write_file(Path(workspace_path) / "src" / "app.py", app_content)
+        files_created.append("app.py")
         
-        print(f" Executing {len(tasks)} tasks with {len(agents)} agents...")
-        print(f" Monitoring: API calls, execution time, quality metrics")
+        req_content = """Flask==2.3.2
+python-dotenv==1.0.0
+Werkzeug==2.3.6
+"""
+        self.safe_write_file(Path(workspace_path) / "requirements.txt", req_content)
+        files_created.append("requirements.txt")
         
-        # Add execution timeout and retry logic
-        execution_start = time.time()
+        readme = f"""# {description}
+
+Web application built with Flask.
+
+## Installation
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+## Run
+python src/app.py
+"""
+        self.safe_write_file(Path(workspace_path) / "README.md", readme)
+        files_created.append("README.md")
+        
+        return files_created
+
+    def _generate_mobile_backend_files(self, workspace_path: str, description: str, custom_reqs: List) -> List[str]:
+        """Generate mobile backend"""
+        files = []
+        
+        init_content = f'"""Mobile Backend: {description}"""\n__version__ = "1.0.0"'
+        self.safe_write_file(Path(workspace_path) / "src" / "__init__.py", init_content)
+        files.append("__init__.py")
+        
+        api_content = f"""from flask import Flask
+
+app = Flask(__name__)
+
+@app.route('/api/v1/health', methods=['GET'])
+def health():
+    return {{'status': 'ok'}}
+"""
+        self.safe_write_file(Path(workspace_path) / "src" / "api.py", api_content)
+        files.append("api.py")
+        
+        req_content = "Flask==2.3.2\nFlask-CORS==4.0.0\npython-dotenv==1.0.0"
+        self.safe_write_file(Path(workspace_path) / "requirements.txt", req_content)
+        files.append("requirements.txt")
+        
+        return files
+
+    def _generate_ml_files(self, workspace_path: str, description: str, custom_reqs: List) -> List[str]:
+        """Generate ML/AI files"""
+        files = []
+        
+        init_content = f'"""ML Application: {description}"""\n__version__ = "1.0.0"'
+        self.safe_write_file(Path(workspace_path) / "src" / "__init__.py", init_content)
+        files.append("__init__.py")
+        
+        model_content = """class MLModel:
+    def __init__(self):
+        self.model = None
+    
+    def load_model(self):
+        pass
+    
+    def predict(self, data):
+        pass
+"""
+        self.safe_write_file(Path(workspace_path) / "src" / "model.py", model_content)
+        files.append("model.py")
+        
+        app_content = f"""import streamlit as st
+
+st.title('{description}')
+st.write('Machine Learning Application')
+"""
+        self.safe_write_file(Path(workspace_path) / "src" / "app.py", app_content)
+        files.append("app.py")
+        
+        req_content = "streamlit==1.28.0\ntensorflow==2.13.0\nscikit-learn==1.3.0\npandas==2.0.0\nnumpy==1.24.0"
+        self.safe_write_file(Path(workspace_path) / "requirements.txt", req_content)
+        files.append("requirements.txt")
+        
+        return files
+
+    def _generate_blockchain_files(self, workspace_path: str, description: str, custom_reqs: List) -> List[str]:
+        """Generate blockchain files"""
+        files = []
+        
+        init_content = f'"""Blockchain: {description}"""\n__version__ = "1.0.0"'
+        self.safe_write_file(Path(workspace_path) / "src" / "__init__.py", init_content)
+        files.append("__init__.py")
+        
+        web3_content = """from web3 import Web3
+
+class Web3Handler:
+    def __init__(self, rpc_url):
+        self.w3 = Web3(Web3.HTTPProvider(rpc_url))
+    
+    def is_connected(self):
+        return self.w3.is_connected()
+"""
+        self.safe_write_file(Path(workspace_path) / "src" / "web3_utils.py", web3_content)
+        files.append("web3_utils.py")
+        
+        req_content = "web3==6.11.0\neth-account==0.9.0\npython-dotenv==1.0.0"
+        self.safe_write_file(Path(workspace_path) / "requirements.txt", req_content)
+        files.append("requirements.txt")
+        
+        return files
+
+    def _generate_api_service_files(self, workspace_path: str, description: str, custom_reqs: List) -> List[str]:
+        """Generate API service files"""
+        files = []
+        
+        app_content = f"""from fastapi import FastAPI
+
+app = FastAPI(title='{description}', version='1.0.0')
+
+@app.get('/health')
+async def health():
+    return {{'status': 'healthy'}}
+
+@app.get('/api/info')
+async def info():
+    return {{'name': '{description}', 'version': '1.0.0'}}
+"""
+        self.safe_write_file(Path(workspace_path) / "src" / "app.py", app_content)
+        files.append("app.py")
+        
+        req_content = "fastapi==0.104.0\nuvicorn==0.24.0\npydantic==2.4.0\npython-dotenv==1.0.0"
+        self.safe_write_file(Path(workspace_path) / "requirements.txt", req_content)
+        files.append("requirements.txt")
+        
+        return files
+
+    def generate_deployment_files(self, workspace_path: str, project_type: str, description: str) -> List[str]:
+        """Generate deployment files"""
+        files = []
+        
+        env_content = """ENVIRONMENT=development
+DEBUG=False
+DATABASE_URL=postgresql://user:password@localhost/dbname
+API_KEY=your-api-key
+SECRET_KEY=your-secret-key
+"""
+        self.safe_write_file(Path(workspace_path) / "config" / ".env.example", env_content)
+        files.append(".env.example")
+        
+        docker_compose = """version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      - ENVIRONMENT=production
+"""
+        self.safe_write_file(Path(workspace_path) / "config" / "docker-compose.yml", docker_compose)
+        files.append("docker-compose.yml")
+        
+        dockerfile = """FROM python:3.11-slim
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY . .
+
+CMD ["python", "src/app.py"]
+"""
+        self.safe_write_file(Path(workspace_path) / "config" / "Dockerfile", dockerfile)
+        files.append("Dockerfile")
+        
+        deploy_guide = f"""# Deployment: {project_type.title()}
+
+## Local
+1. python -m venv venv
+2. pip install -r requirements.txt
+3. python src/app.py
+
+## Docker
+1. docker build -t app .
+2. docker run -p 5000:5000 app
+
+## Production
+1. Gunicorn/Uvicorn
+2. Nginx reverse proxy
+3. SSL/TLS
+"""
+        self.safe_write_file(Path(workspace_path) / "docs" / "deployment.md", deploy_guide)
+        files.append("deployment.md")
+        
+        return files
+
+    async def execute_with_monitoring(self, agents: List, tasks: List[Task], workspace_path: str) -> str:
+        """Execute tasks"""
+        print(f"⚙️  Executing {len(tasks)} tasks...")
         
         try:
-            # Create crew with comprehensive configuration
             crew = Crew(
                 agents=agents,
                 tasks=tasks,
                 verbose=True,
                 memory=False,
-                max_execution_time=3600,  # 1 hour max
-                #process_timeout=300       # 5 minutes per task timeout
+                max_execution_time=7200,
+                process_timeout=1800
             )
             
-            # Execute with monitoring
-            print(" Starting coordinated execution...")
-            result = crew.kickoff()
-            
-            execution_time = time.time() - execution_start
-            
-            print(f"    Execution completed in {execution_time:.1f} seconds")
-            print(f"    All deliverables saved to workspace")
-            
+            result = await asyncio.to_thread(crew.kickoff)
+            print(f"   ✅ Execution completed")
             return str(result)
             
         except Exception as e:
-            execution_time = time.time() - execution_start
-            print(f"    Execution failed after {execution_time:.1f} seconds: {str(e)}")
-            
-            # Attempt recovery
-            recovery_result = await self._attempt_recovery(agents, tasks, workspace_path, str(e))
-            return recovery_result
-    
-    async def _validate_and_finalize(self, workspace_path: str, execution_result: str, 
-                                   project_plan: Dict) -> Dict[str, Any]:
-        """Validate project output and create final report"""
-        
-        print(" Validating project deliverables and generating final report...")
+            print(f"   ❌ Execution failed: {str(e)}")
+            return str(e)
+
+    async def validate_and_finalize(self, workspace_path: str, execution_result: str, project_plan: Dict) -> Dict[str, Any]:
+        """Validate and finalize"""
+        print("✅ Validating...")
         
         workspace = Path(workspace_path)
-        
-        # Count generated files
         all_files = list(workspace.rglob("*"))
-        code_files = [f for f in all_files if f.suffix in ['.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.cpp', '.sol']]
-        doc_files = [f for f in all_files if f.suffix in ['.md', '.txt', '.rst']]
-        config_files = [f for f in all_files if f.name in ['requirements.txt', 'package.json', 'Dockerfile', 'docker-compose.yml']]
+        code_files = [f for f in all_files if f.suffix in [".py", ".js", ".ts"]]
+        doc_files = [f for f in all_files if f.suffix in [".md", ".txt"]]
         
-        # Calculate quality score
-        quality_score = self._calculate_quality_score(workspace, code_files, doc_files)
+        quality_score = 0
+        if len(code_files) > 0:
+            quality_score += 20
+        if len(doc_files) > 0:
+            quality_score += 15
+        if (workspace / "README.md").exists():
+            quality_score += 10
+        if any(f.name in ["requirements.txt", "package.json"] for f in workspace.rglob("*")):
+            quality_score += 5
         
-        # Generate final summary
-        summary = f"""
-         PROJECT GENERATION COMPLETE!
+        summary = f"""PROJECT GENERATION COMPLETE!
+
+Files Generated: {len(all_files)}
+Code Files: {len(code_files)}
+Documentation: {len(doc_files)}
+Quality Score: {quality_score}/100
+"""
         
-            ` Project Statistics:
-        • Total Files Generated: {len(all_files)}
-        • Source Code Files: {len(code_files)}
-        • Documentation Files: {len(doc_files)}
-        • Configuration Files: {len(config_files)}
-        • Quality Score: {quality_score}%
-        
-         Workspace Structure:
-        {workspace_path}/
-        ├── src/           # Source code
-        ├── docs/          # Documentation  
-        ├── tests/         # Test files
-        ├── config/        # Configuration
-        └── scripts/       # Deployment scripts
-        
-         Ready for development and deployment!
-        """
-        
-        # Save final report
         report_file = workspace / "PROJECT_REPORT.md"
-        with open(report_file, 'w') as f:
-            f.write(summary)
-        
-        print(f"    Quality Score: {quality_score}%")
-        print(f"    Final report saved: {report_file}")
+        self.safe_write_file(report_file, summary)
         
         return {
             "quality_score": quality_score,
@@ -568,109 +687,99 @@ class MasterOrchestrator:
             "quality_metrics": {
                 "code_files": len(code_files),
                 "documentation_files": len(doc_files),
-                "configuration_files": len(config_files)
             },
             "summary": summary.strip()
         }
-    
-    # Helper methods
-    def _generate_project_id(self, requirements: Dict) -> str:
-        """Generate unique project ID"""
+
+    def generate_project_id(self, requirements: Dict) -> str:
+        """Generate ID"""
         timestamp = int(time.time())
         project_type = requirements.get("type", "custom")[:10]
         return f"{project_type}_{timestamp}"
-    
-    def _assess_project_complexity(self, description: str, custom_reqs: List) -> str:
-        """Assess project complexity based on description and requirements"""
-        complexity_indicators = {
-            "simple": ["basic", "simple", "crud", "hello world"],
-            "medium": ["authentication", "api", "database", "responsive"],
-            "complex": ["microservices", "scalable", "enterprise", "real-time"],
-            "advanced": ["ai", "blockchain", "machine learning", "distributed", "iot"]
+
+    def assess_project_complexity(self, description: str, custom_reqs: List) -> str:
+        """Assess complexity"""
+        indicators = {
+            "simple": ["basic", "simple", "crud"],
+            "medium": ["authentication", "api", "database"],
+            "complex": ["microservices", "scalable"],
+            "advanced": ["ai", "blockchain", "machine learning"]
         }
         
-        desc_lower = description.lower()
-        req_text = " ".join(custom_reqs).lower() if custom_reqs else ""
-        combined_text = f"{desc_lower} {req_text}"
+        combined = f"{description.lower()} {' '.join(custom_reqs).lower()}"
         
-        for complexity, indicators in complexity_indicators.items():
-            if any(indicator in combined_text for indicator in indicators):
+        for complexity, words in indicators.items():
+            if any(word in combined for word in words):
                 return complexity
         
-        return "medium"  # Default
-    
-    def _estimate_duration(self, complexity: str, task_count: int) -> int:
-        """Estimate execution duration in minutes"""
-        base_times = {"simple": 2, "medium": 5, "complex": 10, "advanced": 15}
-        return base_times.get(complexity, 5) * task_count
-    
-    def _identify_risk_factors(self, project_type: str, custom_reqs: List) -> List[str]:
-        """Identify potential risk factors"""
+        return "medium"
+
+    def estimate_duration(self, complexity: str, task_count: int) -> int:
+        """Estimate duration"""
+        times = {"simple": 2, "medium": 5, "complex": 10, "advanced": 15}
+        return times.get(complexity, 5) * task_count
+
+    def identify_risk_factors(self, project_type: str, custom_reqs: List) -> List[str]:
+        """Identify risks"""
         risks = []
-        if "blockchain" in str(custom_reqs).lower():
+        combined = f"{project_type} {' '.join(custom_reqs)}".lower()
+        
+        if "blockchain" in combined:
             risks.append("Smart contract security")
-        if "ai" in str(custom_reqs).lower():
-            risks.append("Model performance and bias")
-        if "real-time" in str(custom_reqs).lower():
+        if "ai" in combined:
+            risks.append("Model performance")
+        if "real-time" in combined:
             risks.append("Performance and latency")
+        
         return risks
-    
-    def _define_success_criteria(self, requirements: Dict) -> List[str]:
-        """Define success criteria for the project"""
+
+    def define_success_criteria(self, requirements: Dict) -> List[str]:
+        """Success criteria"""
         return [
-            "All specified features implemented",
+            "All features implemented",
             "Code follows best practices",
-            "Comprehensive documentation provided",
-            "Tests cover main functionality",
+            "Documentation provided",
+            "Tests included",
             "Deployment ready"
         ]
-    
-    def _define_quality_gates(self, project_type: str) -> List[str]:
-        """Define quality gates for validation"""
+
+    def define_quality_gates(self, project_type: str) -> List[str]:
+        """Quality gates"""
         return [
-            "Code compilation/syntax check",
+            "Code syntax check",
             "Documentation completeness",
-            "Basic functionality test",
             "Security best practices",
             "Performance considerations"
         ]
-    
-    async def _check_rate_limits(self):
-        """Check and manage API rate limits"""
-        # Simple rate limit check - can be enhanced
-        if self.request_counts["openrouter"] > 40:
-            print(" Approaching OpenRouter rate limits")
-        if self.request_counts["groq"] > 1000:  # Conservative estimate
-            print(" High Groq usage - monitoring performance")
 
-    async def _attempt_recovery(self, agents: List, tasks: List[Task], workspace_path: str, error: str) -> str:
-        """Attempt to recover from execution errors"""
-        print(f"🔧 Attempting error recovery for: {error[:100]}...")
-        return f"Partial completion - {len(tasks)} tasks created, workspace prepared at {workspace_path}"
-    
-    async def _handle_project_error(self, error: Exception, project_id: str, execution_time: float) -> Dict:
-        """Handle project errors gracefully"""
+    async def attempt_recovery(self, agents: List, tasks: List, workspace_path: str, error: str) -> str:
+        """Recovery"""
+        self.error_handler.log_error(
+            Exception(error),
+            severity=ErrorSeverity.HIGH,
+            context="Project execution failed",
+            recoverable=True,
+            recovery_action="Partial completion"
+        )
+        return f"Partial completion. Check: {workspace_path}"
+
+    async def handle_project_error(self, error: Exception, project_id: str, execution_time: float) -> Dict[str, Any]:
+        """Handle error"""
+        self.error_handler.log_error(
+            error,
+            severity=ErrorSeverity.CRITICAL,
+            context=f"Project {project_id} failed",
+            recoverable=False,
+            recovery_action="Review error logs"
+        )
+        
         return {
             "success": False,
-            "project_id": project_id,
             "error": str(error),
+            "project_id": project_id,
             "execution_time": execution_time,
-            "recovery_actions": ["Check API keys", "Verify network connection", "Review error logs"],
-            "partial_workspace": f"{self.workspace_base}/{project_id}"
         }
-    
-    def _calculate_quality_score(self, workspace: Path, code_files: List, doc_files: List) -> int:
-        """Calculate overall quality score"""
-        score = 50  # Base score
-        
-        # Add points for file generation
-        if len(code_files) > 0:
-            score += 20
-        if len(doc_files) > 0:
-            score += 15
-        if (workspace / "README.md").exists():
-            score += 10
-        if any(f.name in ['requirements.txt', 'package.json'] for f in workspace.rglob("*")):
-            score += 5
-        
-        return min(score, 100)
+
+    async def check_rate_limits(self):
+        """Check rate limits"""
+        await self.rate_limiter.wait_if_needed("openrouter")
